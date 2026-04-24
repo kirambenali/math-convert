@@ -11,7 +11,9 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": 'attachment; filename="math.docx"',
+        "Content-Disposition": 'attachment; filename="Devoir_Mathematiques.docx"',
+        "Content-Length": String(buffer.length),
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (e) {

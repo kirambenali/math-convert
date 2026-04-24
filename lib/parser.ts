@@ -3,6 +3,7 @@ export interface ParsedSegment {
   level?: 1 | 2 | 3;
   content: string;
   display?: string;
+  bold?: boolean;
 }
 
 const U2L: Record<string, string> = {
@@ -52,40 +53,108 @@ function l2d(latex: string): string {
   return s.replace(/\\([a-zA-Z]+)/g, "$1").replace(/\{([^{}]*)\}/g, "$1").trim();
 }
 
+function addTextSegment(res: ParsedSegment[], text: string, bold: boolean = false) {
+  if (!text) return;
+  if (res.length > 0 && res[res.length - 1].type === "text" && !!res[res.length - 1].bold === bold) {
+    res[res.length - 1].content += text;
+  } else {
+    res.push({ type: "text", content: text, bold });
+  }
+}
+
 export function parseInput(raw: string): ParsedSegment[] {
   let s = raw.replace(/\\ast\\ast/g, "**").replace(/\\\*/g, "*").replace(/\\{2}\(/g, "\\(").replace(/\\{2}\)/g, "\\)").replace(/\\{2}\[/g, "\\[").replace(/\\{2}\]/g, "\\]");
   s = s.replace(/[\u200B-\u200F\u2061\uFEFF\u00A0]/g, " ").replace(/[\u2018\u2019\u201A\u201B]/g, "'").replace(/[\u201C\u201D\u201E\u201F]/g, '"').replace(/\u2026/g, "\\dots");
   s = s.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   s = s.replace(/\\li\s*\\?lim\b/gi, "\\lim ").replace(/\\inf\s*ty\b/gi, "\\infty ").replace(/\bin\s*f\s*ty\b/gi, "\\infty ");
-  s = s.replace(/\\left\s*\\(sqrt|frac|sum|int|prod)/g, "\\$1").replace(/\\right\s*$/g, "").replace(/\\left\s*$/g, "");
   s = s.replace(/\\\[/g, "$$").replace(/\\\]/g, "$$").replace(/\\\(/g, "$").replace(/\\\)/g, "$");
+
   const ph: ParsedSegment[] = [], bh = new Set<number>();
-  let pt = s.replace(/(\*\*|\\ast\\ast)([\s\S]*?)(\*\*|\\ast\\ast)/g, (f, o, c, cl, os, st) => {
-    const idx = ph.length; ph.push({ type: "text", content: `**${c}**` });
-    const ls = st.lastIndexOf("\n", os - 1) + 1, le = st.indexOf("\n", os + f.length), lc = st.slice(ls, le === -1 ? st.length : le).trim();
-    if (lc === f.trim() && c.trim().length > 2 && (!FP.test(c) || /^Exercice/i.test(c.trim()))) bh.add(idx);
-    return ` ___BOLD${idx}___ `;
+  
+  let pt = s;
+  pt = pt.replace(/\$\$([\s\S]+?)\$\$/g, (_, c) => { 
+    const idx = ph.length, l = unicodeToLatex(c.trim()); 
+    ph.push({ type: "math-block", content: l, display: l2d(l) }); 
+    return `§MB${idx}§`; 
   });
+  pt = pt.replace(/\$([\s\S]+?)\$/g, (_, c) => { 
+    const idx = ph.length, l = unicodeToLatex(c.trim()); 
+    ph.push({ type: "math-inline", content: l, display: l2d(l) }); 
+    return `§MI${idx}§`; 
+  });
+
+  pt = pt.replace(/(\*\*|\\ast\\ast)([\s\S]*?)(\*\*|\\ast\\ast)/g, (match, open, content, close, offset, full) => {
+    const idx = ph.length; 
+    ph.push({ type: "text", content: content });
+    const ls = full.lastIndexOf("\n", offset - 1) + 1;
+    const le = full.indexOf("\n", offset + match.length);
+    const lc = full.slice(ls, le === -1 ? full.length : le).trim();
+    if (lc === match.trim() && content.trim().length > 2 && (!FP.test(content.replace(/§M[BI]\d+§/g, "")) || /^Exercice/i.test(content.trim()))) {
+      bh.add(idx);
+      return `§B${idx}§`;
+    }
+    return `§BOLD${idx}§`; 
+  });
+
   const mh = new Map<string, { level: 1 | 2 | 3; content: string }>();
-  pt = pt.replace(/^(#{1,3})[ \t]+(.+)$/gm, (f, h, t) => { const k = `___HEADING_${mh.size}___`; mh.set(k, { level: Math.min(h.length, 3) as 1|2|3, content: t.trim() }); return k; });
-  pt = pt.replace(/\$\$([\s\S]+?)\$\$/g, (_, c) => { const idx = ph.length, l = unicodeToLatex(c.trim()); ph.push({ type: "math-block", content: l, display: l2d(l) }); return ` ___MB${idx}___ `; });
-  pt = pt.replace(/\$([\s\S]+?)\$/g, (_, c) => { const idx = ph.length, l = unicodeToLatex(c.trim()); ph.push({ type: "math-inline", content: l, display: l2d(l) }); return ` ___MI${idx}___ `; });
+  pt = pt.replace(/^(#{1,3})[ \t]+(.+)$/gm, (f, h, t) => { 
+    const k = `§H${mh.size}§`; 
+    mh.set(k.trim(), { level: Math.min(h.length, 3) as 1|2|3, content: t.trim() }); 
+    return k; 
+  });
+
   const res: ParsedSegment[] = [];
   pt.split("\n").forEach(l => {
-    const t = l.trim(); if (!t) { res.push({ type: "empty", content: "" }); return; }
-    if (mh.has(t)) { const h = mh.get(t)!; res.push({ type: "heading", level: h.level, content: h.content }); return; }
-    const blm = t.match(/^___BOLD(\d+)___$/);
-    if (blm && bh.has(parseInt(blm[1]))) { res.push({ type: "heading", level: 2, content: ph[parseInt(blm[1])].content.replace(/\*\*/g, "").trim() }); return; }
-    const rx = /( ___M[BI]\d+___ | ___BOLD\d+___ )|([\u0370-\u03ff\u2100-\u214f\u2200-\u22ff\u2190-\u21ff\u2a00-\u2aff\u27c0-\u27ef⁰¹²³⁴⁵⁶⁷⁸⁹ⁿⁱ⁺⁻ᵃᵇᶜᵈᵉ₀₁₂₃₄₅₆₇₈₉ₙₐₑᵢⱼₖₘₒₚᵣₛₜᵤᵥₓ′″=+\-><!\u2212]{1,})|(\\[a-zA-Z]+(\{[\s\S]*?\})*)/g;
+    const t = l.trim(); 
+    if (!t || /^([-*_])\1{2,}$/.test(t)) {
+      if (!t) res.push({ type: "empty", content: "" });
+      return;
+    }
+    if (mh.has(t)) { 
+      const h = mh.get(t)!; 
+      res.push({ type: "heading", level: h.level, content: h.content }); 
+      return; 
+    }
+    const blm = t.match(/^§B(\d+)§$/);
+    if (blm && bh.has(parseInt(blm[1]))) { 
+      const idx = parseInt(blm[1]);
+      const content = ph[idx].content.replace(/§MI\d+§/g, (m) => {
+        const mix = parseInt(m.match(/\d+/)![0]);
+        return ph[mix].content; 
+      }).trim();
+      res.push({ type: "heading", level: 2, content }); 
+      return; 
+    }
+
+    const rx = /(§(?:MB|MI|B|BOLD|H)\d+§)|([\u0370-\u03ff\u2100-\u214f\u2200-\u22ff\u2190-\u21ff\u2a00-\u2aff\u27c0-\u27ef⁰¹²³⁴⁵⁶⁷⁸⁹ⁿⁱ⁺⁻ᵃᵇᶜᵈᵉ₀₁₂₃₄₅₆₇₈₉ₙₐₑᵢⱼₖₘₒₚᵣₛₜᵤᵥₓ′″=+\-<>!\u2212^]{1,})|(\\[a-zA-Z]+(?:\{[^{}]*\}|)*)/g;
     let li = 0, m;
     while ((m = rx.exec(l)) !== null) {
-      if (m.index > li) { const c = l.slice(li, m.index); if (res.length > 0 && res[res.length-1].type === "text") res[res.length-1].content += c; else res.push({ type: "text", content: c }); }
-      const tk = m[0], pm = tk.match(/ ___M([BI])(\d+)___ | ___BOLD(\d+)___ /);
-      if (pm) res.push(ph[parseInt(pm[3] || pm[2])]);
-      else { const lx = unicodeToLatex(tk); res.push({ type: "math-inline", content: lx, display: l2d(lx) }); }
+      if (m.index > li) addTextSegment(res, l.slice(li, m.index));
+      const tk = m[0], pm = tk.match(/^§(MB|MI|B|BOLD|H)(\d+)§$/);
+      if (pm) {
+        if (pm[1] === "H") res.push({ type: "heading", ...mh.get(tk)! });
+        else if (pm[1] === "BOLD") {
+           const idx = parseInt(pm[2]);
+           const content = ph[idx].content;
+           const brx = /(§MI\d+§)/g;
+           let bli = 0, bm;
+           while ((bm = brx.exec(content)) !== null) {
+              if (bm.index > bli) addTextSegment(res, content.slice(bli, bm.index), true);
+              const btk = bm[0], bidx = parseInt(btk.match(/\d+/)![0]);
+              res.push({ ...ph[bidx], bold: true });
+              bli = brx.lastIndex;
+           }
+           if (bli < content.length) addTextSegment(res, content.slice(bli), true);
+        } else {
+           res.push(ph[parseInt(pm[2])]);
+        }
+      } else { 
+        const lx = unicodeToLatex(tk); 
+        res.push({ type: "math-inline", content: lx, display: l2d(lx) }); 
+      }
       li = rx.lastIndex;
     }
-    if (li < l.length) { const c = l.slice(li); if (res.length > 0 && res[res.length-1].type === "text") res[res.length-1].content += c; else res.push({ type: "text", content: c }); }
+    if (li < l.length) addTextSegment(res, l.slice(li));
   });
   return res;
 }
